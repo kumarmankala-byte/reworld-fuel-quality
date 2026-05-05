@@ -52,7 +52,7 @@ from PIL import Image as _PILImage
 
 # ── rolling-window config ─────────────────────────────────────────────────────
 # Only sync / process data from the past N weeks.  Increase to retain more history.
-ROLLING_WEEKS: int = 4
+ROLLING_WEEKS: int = 1
 
 # ── paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR          = Path('/home/shared/kumar/library/fastapi-jupyter-dashboard')
