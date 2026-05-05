@@ -50,6 +50,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from PIL import Image as _PILImage
 
+# ── rolling-window config ─────────────────────────────────────────────────────
+# Only sync / process data from the past N weeks.  Increase to retain more history.
+ROLLING_WEEKS: int = 4
+
 # ── paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR          = Path('/home/shared/kumar/library/fastapi-jupyter-dashboard')
 DATA_DIR          = BASE_DIR / 'data'
@@ -220,13 +224,17 @@ def _recompute_eda_incremental(cam: str, device_id: str, log: list) -> int:
         except Exception:
             pass
 
-    # Identify which stems are new (in S3 index, newer than cutoff)
+    # Rolling window: never process frames older than ROLLING_WEEKS
+    from datetime import timedelta
+    window_start = datetime.now() - timedelta(weeks=ROLLING_WEEKS)
+
+    # Identify which stems are new and within the rolling window
     idx = _s3_upload_times(cam)
     new_stems: dict[str, datetime] = {}
     for stem in idx:
         try:
             ts = datetime.strptime(stem, '%Y%m%d%H%M%S')
-            if cutoff is None or ts > cutoff:
+            if ts >= window_start and (cutoff is None or ts > cutoff):
                 new_stems[stem] = ts
         except ValueError:
             pass
@@ -237,14 +245,26 @@ def _recompute_eda_incremental(cam: str, device_id: str, log: list) -> int:
 
     log.append(f'  {cam}: {len(new_stems)} new frames — syncing from S3…')
 
-    # Bulk download via aws s3 sync (much faster than individual cp calls)
+    # Sync only the day-level prefixes that fall within the rolling window.
+    # This avoids listing/downloading the full historical S3 prefix each time.
+    import datetime as _dt
+    days_in_window: list[_dt.date] = []
+    d = window_start.date()
+    while d <= datetime.now().date():
+        days_in_window.append(d)
+        d += timedelta(days=1)
+
     for pfx in S3_PREFIXES.get(cam, []):
-        r = subprocess.run(
-            ['aws', 's3', 'sync', pfx, str(local_dir), '--only-show-errors'],
-            capture_output=True, text=True, timeout=600,
-        )
-        if r.stderr.strip():
-            log.append(f'    sync warning: {r.stderr.strip()[:200]}')
+        for day in days_in_window:
+            day_s3  = f'{pfx}year={day.year}/month={day.month:02d}/day={day.day:02d}/'
+            day_loc = local_dir / f'year={day.year}' / f'month={day.month:02d}' / f'day={day.day:02d}'
+            day_loc.mkdir(parents=True, exist_ok=True)
+            r = subprocess.run(
+                ['aws', 's3', 'sync', day_s3, str(day_loc), '--only-show-errors'],
+                capture_output=True, text=True, timeout=120,
+            )
+            if r.stderr.strip():
+                log.append(f'    sync warning ({day}): {r.stderr.strip()[:120]}')
 
     # Process every new stem that is now available locally
     rows: list[dict] = []
@@ -318,17 +338,31 @@ def _run_sync():
         log.append(f"  ✗ {e}")
 
     # ── Step 2: full sync + recompute for chute cameras ───────────────────────
+    # Build include flags for only the day-prefixes in the rolling window
+    from datetime import timedelta as _td, date as _date
+    _win_start = datetime.now() - _td(weeks=ROLLING_WEEKS)
+    _days: list[_date] = []
+    _d = _win_start.date()
+    while _d <= datetime.now().date():
+        _days.append(_d)
+        _d += _td(days=1)
+    _include_flags: list[str] = []
+    for _day in _days:
+        _include_flags += ['--include',
+                           f'year={_day.year}/month={_day.month:02d}/day={_day.day:02d}/*']
+    _sync_extra = ['--exclude', '*'] + _include_flags
+
     chute_steps = [
         ("S3 sync — achute",
          ["aws", "s3", "sync",
           f"{_S3B}/site=haverhill/facility=a/device_id=reworld-haverhill-achute/data_type=csv/",
           str(CAM_DIR / "reworld-haverhill-achute/data_type=csv/"),
-          "--only-show-errors"]),
+          "--only-show-errors"] + _sync_extra),
         ("S3 sync — chuteb",
          ["aws", "s3", "sync",
           f"{_S3B}/site=haverhill/facility=chute/device_id=reworld-haverhill-chuteb/data_type=csv/",
           str(CAM_DIR / "reworld-haverhill-chuteb/data_type=csv/"),
-          "--only-show-errors"]),
+          "--only-show-errors"] + _sync_extra),
         ("Recompute — achute",
          [py, str(SCRIPTS_DIR / "chute_signals.py"),
           str(CAM_DIR / "reworld-haverhill-achute"),
