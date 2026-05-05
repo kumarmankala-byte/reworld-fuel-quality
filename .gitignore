@@ -1,0 +1,33 @@
+# downloaded / generated data — populate locally by running Sync from S3
+data/
+camera_data/
+google_drive_upload_tmp/
+
+# large binary assets
+scripts/sample_images/
+scripts/CameraSpecs/
+
+# exported one-off HTML snapshots
+*.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+scripts/.ipynb_checkpoints/
+
+# Claude Code local settings
+.claude/
+scripts/.claude/
+
+# MCP temp uploads
+.mcp_upload_tmp/
+
+# logs
+/tmp/
+*.log
